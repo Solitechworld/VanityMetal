@@ -223,6 +223,39 @@ how you are storing its key.
 
 ---
 
+## Funding
+
+VanityMetal is free, MIT licensed, and built without institutional backing. It
+exists alongside a larger project — a full Bitcoin Core node running on Android
+— and both need serious funding to reach where they should go: an audited
+release, notarised distribution, and the sustained maintenance that GPU code
+demands as Apple's stack moves under it.
+
+If the work is useful to you and you would like to support it:
+
+```
+bitcoin:1Be6LLAEndprdWKiH6YM62setFQRXJzfha
+```
+
+`1Be6LLAEndprdWKiH6YM62setFQRXJzfha` — mainnet P2PKH.
+
+**Verify before you send.** This is a repository whose entire subject is
+generating Bitcoin addresses, which makes a donation address in its README an
+unusually attractive thing for someone to quietly swap in a fork or a pull
+request. The same address appears in my other project, where it is compiled
+into the app as `Donation.ADDRESS` and covered by a checksum test — so check
+this one against that one, compare the first and last four characters
+(`1Be6` … `zfha`), and treat any mismatch as a fork you should not trust.
+
+One independent source is the minimum. That advice is worth following on every
+project that asks for coins in a text file, not only this one.
+
+Nothing here is an investment offer and no return of any kind is implied. For
+sponsorship, contract work, or a conversation about backing the project, open
+an issue.
+
+---
+
 ## Licence
 
 MIT — see `LICENSE`.
