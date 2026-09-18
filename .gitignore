@@ -11,6 +11,10 @@ VanityMetal.app/
 verify-log.txt
 session.log
 
+# Generated documentation site. Built by site/build.py in CI and deployed to
+# Pages; never committed, so it cannot go stale against the Markdown.
+_site/
+
 # Python bytecode from running the Tools/ verifiers. A .pyc embeds the absolute
 # path of the source it was compiled from, so this is not only noise.
 __pycache__/

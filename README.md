@@ -1,4 +1,14 @@
-# VanityMetal
+<img src="Resources/banner.svg" alt="VanityMetal — GPU vanity address engine for macOS" width="100%">
+
+<p>
+<img src="https://img.shields.io/badge/macOS-12%2B-00d9d9?style=flat-square&labelColor=07090f" alt="macOS 12+">
+<img src="https://img.shields.io/badge/Swift-5.7%2B-00d9d9?style=flat-square&labelColor=07090f" alt="Swift 5.7+">
+<img src="https://img.shields.io/badge/dependencies-zero-00c850?style=flat-square&labelColor=07090f" alt="zero dependencies">
+<img src="https://img.shields.io/badge/licence-MIT-8b96a8?style=flat-square&labelColor=07090f" alt="MIT licence">
+<a href="https://github.com/Solitechworld/VanityMetal/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Solitechworld/VanityMetal/ci.yml?branch=main&style=flat-square&labelColor=07090f&color=00d9d9&label=ci" alt="CI"></a>
+</p>
+
+**[Documentation site](https://solitechworld.github.io/VanityMetal/)** · [Install](docs/00-INSTALL.md) · [Architecture](docs/01-ARCHITECTURE.md) · [Verification](docs/04-VERIFICATION.md)
 
 A GPU vanity-address engine for the Mac, written from scratch in Swift and
 Metal. Where [VanitySearch](https://github.com/JeanLucPons/VanitySearch) needs
