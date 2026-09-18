@@ -11,6 +11,11 @@ VanityMetal.app/
 verify-log.txt
 session.log
 
+# Python bytecode from running the Tools/ verifiers. A .pyc embeds the absolute
+# path of the source it was compiled from, so this is not only noise.
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
 ._*
