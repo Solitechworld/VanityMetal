@@ -262,6 +262,9 @@ how you are storing its key.
 
 ## Funding
 
+
+[<img src="Resources/donate.svg" alt="Donate Bitcoin — 1Be6LLAEndprdWKiH6YM62setFQRXJzfha" width="440">](https://mempool.space/address/1Be6LLAEndprdWKiH6YM62setFQRXJzfha)
+
 VanityMetal is free and MIT licensed, and it stays that way. Donations are not
 for this tool — they go to a separate project I am building, unreleased and not
 yet public, aimed squarely at Bitcoin. I think it changes something real about
