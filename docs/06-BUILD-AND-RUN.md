@@ -1,50 +1,24 @@
-# Building, running and tuning
+# Running and tuning
 
 ---
 
-## Requirements
+## Installing
 
-**macOS 12 (Monterey) or newer, and the Xcode Command Line Tools.** That is the
-whole list.
+Requirements, the install walkthrough, Gatekeeper, updating and a safe
+uninstall all live in **`00-INSTALL.md`**. They are not repeated here — two
+copies of an install guide drift apart, and the stale one is always the one
+someone reads.
+
+The short version:
 
 ```bash
 xcode-select --install
+./build.sh --test     # build + the 57-check suite
+open VanityMetal.app
 ```
 
-No Homebrew, no CUDA, no Python at runtime, no Swift packages. Full Xcode is
-needed only for `swift test` (XCTest), and `./build.sh --test` covers the same
-ground without it.
-
-### Hardware
-
-| | |
-|---|---|
-| Apple silicon (M-series) | unified memory path; the fast case |
-| Intel Macs with T2 | works — Intel Iris and AMD Radeon GPUs are supported |
-| Any Mac | the CPU engine always works, GPU or not |
-
-The 32-bit limb layout in the kernel exists precisely so the older Intel and AMD
-GPUs behave identically to Apple silicon. See `02-GPU-KERNEL.md`.
-
----
-
-## Build
-
-```bash
-./build.sh              # produces VanityMetal.app
-./build.sh --test       # run the 57-check verification suite first
-./build.sh --xctest     # also run the XCTest suite (needs full Xcode)
-./build.sh --run        # build, then launch
-./build.sh --clean      # remove .build and the app bundle
-```
-
-The script checks the toolchain (macOS version, Swift presence, architecture),
-compiles in release mode, assembles the `.app`, builds the icon with `iconutil`
-and applies an **ad-hoc signature** so Gatekeeper does not nag. Drop the
-resulting bundle anywhere.
-
-The ad-hoc signature is not notarisation. Distributing the app to other people
-means a Developer ID and a notarisation run; for your own machine it is enough.
+This document picks up from there: running it, tuning it, and what to do when
+throughput is not what you expected.
 
 ---
 

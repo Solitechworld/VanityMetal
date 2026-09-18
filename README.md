@@ -20,20 +20,46 @@ rebuilt on the CPU before it appears.*
 
 ---
 
-## Build
+## Requirements
+
+| | Needed for | Notes |
+|---|---|---|
+| **macOS 12 (Monterey) or newer** | everything | `build.sh` refuses anything older |
+| **Xcode Command Line Tools** | building | `xcode-select --install` · ~2 GB |
+| **Swift 5.7+** | building | Ships with Command Line Tools 14+ / Xcode 14+ |
+| **~600 MB free disk** | building | `.build` reaches ~578 MB; the app itself is 3 MB |
+| **A Metal-capable GPU** | the fast path | Optional — the CPU engine runs without one |
+| **Full Xcode** | `swift test` only | **Not required.** `./build.sh --test` covers the same ground |
+
+No Homebrew, no CUDA, no package manager, no Swift dependencies. Apple silicon
+and the Intel Iris / AMD Radeon GPUs in T2 Macs are both supported.
+
+---
+
+## Install
+
+There is no prebuilt download. You build it yourself, which is the point for a
+program that generates private keys.
 
 ```bash
-./build.sh            # produces VanityMetal.app
-./build.sh --test     # run the test suite first
-./build.sh --run      # build and launch
+xcode-select --install                                        # if you haven't
+git clone https://github.com/Solitechworld/VanityMetal.git
+cd VanityMetal
+./build.sh --test                                             # build + verify
+open VanityMetal.app
 ```
 
-Requirements: **macOS 12 or newer** and the Xcode Command Line Tools
-(`xcode-select --install`). That is the entire dependency list.
+`./build.sh` checks your toolchain, compiles in release mode, assembles the app
+bundle, builds the icon with `iconutil` and ad-hoc signs it so Gatekeeper does
+not nag. Drop the result anywhere — `/Applications`, or leave it where it is.
+First build takes 2–5 minutes.
 
-The script checks your toolchain, compiles in release mode, assembles the app
-bundle, builds the icon with `iconutil` and applies an ad-hoc signature so
-Gatekeeper does not nag. Drop the resulting `VanityMetal.app` anywhere.
+**The first launch is slow and that is normal.** The Metal kernels compile from
+embedded source at startup: about 5 s on Apple silicon, and measured at 23 s on
+an AMD Radeon Pro 5500M. It is compiling, not hung, and the result is cached.
+
+Full walkthrough — Gatekeeper, verification, updating, and how to uninstall
+**without destroying keys you have found** — in **`docs/00-INSTALL.md`**.
 
 ---
 
@@ -213,12 +239,13 @@ how you are storing its key.
 
 | | |
 |---|---|
+| `docs/00-INSTALL.md` | Requirements, install, Gatekeeper, updating, safe uninstall |
 | `docs/01-ARCHITECTURE.md` | The modules, the dispatch loop, and why there are two engines |
 | `docs/02-GPU-KERNEL.md` | The Metal kernel: limbs, batch inversion, buffer layout, editing it |
 | `docs/03-ADDRESS-MATH.md` | Why 58ⁿ is wrong, what is computed instead, how that was checked |
 | `docs/04-VERIFICATION.md` | The four layers, what each covers, and what CI cannot cover |
 | `docs/05-SECURITY.md` | Key handling, the supply chain, and what this does *not* protect against |
-| `docs/06-BUILD-AND-RUN.md` | Requirements, build, tuning, troubleshooting |
+| `docs/06-BUILD-AND-RUN.md` | Running it, tuning walkers and dispatch, thermal behaviour |
 | `CONTRIBUTING.md` | The two rules, paired constants, adding an address kind |
 
 ---
