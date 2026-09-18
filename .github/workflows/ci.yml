@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The two Python verifiers are stdlib-only and need no GPU, no Swift and no
+  # macOS. They are the cheapest possible check that the maths still holds, so
+  # they run first and on the fastest runner available.
+  model:
+    name: reference models
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 --version
+      - name: Kernel reference model (limb-for-limb vs Python big integers)
+        run: python3 Tools/verify_model.py
+      - name: Prefix target ranges (both directions)
+        run: python3 Tools/verify_targets.py
+
+  # MetalShaderSource.swift is generated from Kernels/VanityKernels.metal by
+  # Tools/embed_kernels.sh. Editing the kernel and forgetting to re-embed
+  # leaves the app running the OLD shader while the repository shows the new
+  # one -- a genuinely confusing failure. Catch it here.
+  embed:
+    name: embedded kernel is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Regenerate and diff
+        run: |
+          cp Sources/VanityMetalCore/MetalShaderSource.swift /tmp/committed.swift
+          Tools/embed_kernels.sh
+          if ! diff -u /tmp/committed.swift Sources/VanityMetalCore/MetalShaderSource.swift; then
+            echo ""
+            echo "MetalShaderSource.swift is stale. Run Tools/embed_kernels.sh and commit."
+            exit 1
+          fi
+          echo "in sync"
+
+  build:
+    name: build and verify (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: Build (release)
+        run: swift build -c release
+      # VanityMetalVerify covers field arithmetic, the curve, the hashes, the
+      # address encoders, the prefix parser and the CPU engine. GitHub's macOS
+      # runners are virtualised and usually expose no Metal device; the binary
+      # prints "no Metal device found -- GPU checks skipped" and exits 0, so
+      # the GPU cross-check is the one layer CI cannot cover. Run ./build.sh
+      # --test on real hardware before a release.
+      - name: Verification suite
+        run: swift run -c release VanityMetalVerify
