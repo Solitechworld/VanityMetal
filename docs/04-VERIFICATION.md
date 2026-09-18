@@ -130,11 +130,29 @@ older T2 Macs, external GPUs, and whatever Metal does under memory pressure.
 `.github/workflows/ci.yml` runs the Python models and the embedded-kernel sync
 check on Linux, and builds plus runs `VanityMetalVerify` on macOS.
 
-**GitHub's macOS runners are virtualised and normally expose no Metal device.**
-The verify binary detects this, prints `no Metal device found — GPU checks
-skipped` and exits 0. So the GPU cross-check — layer 2's most valuable part —
-is the one thing CI cannot do for you.
+The macOS runner **does** expose a Metal device — an *Apple Paravirtual device*
+— so CI runs the full suite, GPU cross-check included:
 
-**Run `./build.sh --test` on real hardware before any release.** A green CI
-badge on this repository means the maths is right; it does not mean the shader
-is.
+```
+device: Apple Paravirtual device
+PASS  batch 0 — GPU and CPU report identical hits   GPU 122, CPU 122, shared 122
+PASS  GPU hits re-derive to the right private keys
+      throughput:  55.27 Mkey/s at 4096 walkers
+ALL 57 CHECKS PASSED
+```
+
+That is better coverage than you might expect, but note precisely what it is
+and is not:
+
+- **Covered:** the shader is correct on a paravirtualised Apple GPU, and agrees
+  with the CPU engine hit-for-hit.
+- **Not covered:** the **Intel Iris and AMD Radeon GPUs in T2 Macs.** That path
+  is the entire reason the kernel uses eight 32-bit limbs instead of four
+  64-bit ones (see `02-GPU-KERNEL.md`), and no CI runner exercises it.
+
+So: **run `./build.sh --test` on a T2 Mac before a release** if you intend to
+support one. A recorded run on an AMD Radeon Pro 5500M passed all 57. Nothing
+in CI will tell you if that stops being true.
+
+If a machine genuinely has no Metal device, the binary prints `no Metal device
+found — GPU checks skipped` and exits 0 rather than failing.

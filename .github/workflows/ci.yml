@@ -49,10 +49,13 @@ jobs:
       - name: Build (release)
         run: swift build -c release
       # VanityMetalVerify covers field arithmetic, the curve, the hashes, the
-      # address encoders, the prefix parser and the CPU engine. GitHub's macOS
-      # runners are virtualised and usually expose no Metal device; the binary
-      # prints "no Metal device found -- GPU checks skipped" and exits 0, so
-      # the GPU cross-check is the one layer CI cannot cover. Run ./build.sh
-      # --test on real hardware before a release.
+      # address encoders, the prefix parser and the CPU engine. The runner does
+      # expose a Metal device ("Apple Paravirtual device"), so the GPU
+      # cross-check runs here too -- both engines from the same seed, asserting
+      # identical hits.
+      #
+      # What this does NOT cover is the Intel Iris / AMD Radeon path in T2
+      # Macs, which is why the kernel uses 32-bit limbs at all. Run
+      # ./build.sh --test on real T2 hardware before a release.
       - name: Verification suite
         run: swift run -c release VanityMetalVerify
