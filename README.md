@@ -180,6 +180,19 @@ python3 Tools/verify_targets.py
 swift test
 ```
 
+Since the Swift suite only builds on Apple hardware, the reference model is also
+exposed as a **pytest** suite so there is a recognized, runnable test target on
+any platform — including Linux CI sandboxes with no Xcode and no GPU:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q          # or: docker build -t vanitymetal . && docker run --rm vanitymetal
+```
+
+`tests/test_reference_model.py` checks the curve and field arithmetic against
+Python big integers, the hashes against published vectors, and address encoding
+against a known key, then runs both verifiers above end to end.
+
 ---
 
 ## Layout

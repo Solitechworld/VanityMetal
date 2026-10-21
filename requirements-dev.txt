@@ -1,0 +1,3 @@
+# Test dependencies. The reference model itself is stdlib-only; pytest is just
+# the runner so the suite is a recognized, collectable test target.
+pytest>=7.0
