@@ -80,8 +80,8 @@ over an hour than letting the machine hit its own throttle, which is blunter.
 **Backdrop** — the animated background costs GPU time that could be searching.
 Turn it off in the Visuals card for a dedicated machine.
 
-**Engine** — GPU by default, CPU as fallback or quiet mode. The CPU engine runs
-the identical algorithm, just slower.
+**Engine** — GPU only. Search needs a Metal-capable device; the CPU is used to
+re-derive and verify reported hits.
 
 ---
 
@@ -93,8 +93,8 @@ the identical algorithm, just slower.
 | `macOS 12 or newer is required` | the Metal features used are not in earlier releases |
 | First launch pauses ~1 s | the Metal kernels compile at launch from embedded source; cached afterwards |
 | `swift test` fails, CLT only | XCTest ships with full Xcode. Use `./build.sh --test` |
-| App says the GPU self-test failed | the launch-time known-answer tests disagreed; it has fallen back to CPU. Please report it with your device name from `session.log` |
-| No Metal device found | CPU engine only. Expected on a VM or a CI runner |
+| App says the GPU self-test failed | the launch-time known-answer tests disagreed; search did not start. Please report it with your device name from `session.log` |
+| No Metal device found | GPU search is unavailable. Expected on a VM or a CI runner |
 | Throughput lower than expected | turn the backdrop off, try `AUTO` walkers, check for thermal pressure |
 | Edited the kernel, nothing changed | you skipped `Tools/embed_kernels.sh`. The app runs the embedded copy |
 

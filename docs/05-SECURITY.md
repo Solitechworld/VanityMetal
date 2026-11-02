@@ -83,9 +83,10 @@ readable, diffable, and checked against a Python reference model in CI.
   rebuilt from scratch before anything is shown or saved. See
   `04-VERIFICATION.md`.
 - **A faulty or exotic GPU.** Known-answer tests run on the GPU at launch; a
-  disagreement falls back to the CPU engine automatically.
+  disagreement prevents the GPU-only search from starting.
 - **Losing a key to a crash.** Written `0600` at the moment of verification.
-- **Walker collisions or repeated runs.** Fresh CSPRNG base, 2¹²⁸ spacing.
+- **Walker overlap.** The configured arithmetic progression is partitioned
+  between GPU walkers; the final dispatch masks candidates beyond the range.
 - **Shoulder-surfing.** Masked until REVEAL.
 
 ## What this does **not** protect against

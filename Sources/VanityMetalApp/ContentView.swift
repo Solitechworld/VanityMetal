@@ -27,6 +27,7 @@ struct ContentView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 14) {
                             TargetsCard(c: c)
+                            KeyRangeCard(c: c)
                             EngineCard(c: c)
                             VisualsCard(animated: $animatedBackground,
                                         intensity: $backgroundIntensity)

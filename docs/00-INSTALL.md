@@ -15,7 +15,7 @@ blindly.
 | **Xcode Command Line Tools** | building | Provides `swift`, `clang`, `codesign`, `iconutil`. ~2 GB |
 | **Swift 5.7 or newer** | building | `Package.swift` declares `swift-tools-version:5.7`. Ships with Command Line Tools 14+ / Xcode 14+ |
 | **~600 MB free disk** | building | `.build` reaches about 578 MB. The finished app is 3 MB |
-| **A Metal-capable GPU** | the fast path | Optional. Without one the CPU engine runs anyway |
+| **A Metal-capable GPU** | searching | Required; this build runs searches on the GPU only |
 | **Full Xcode** | `swift test` only | **Not required.** `./build.sh --test` covers the same ground without it |
 | **Python 3** | `Tools/` verifiers only | Ships with the Command Line Tools. Not needed to build or run the app |
 
@@ -29,7 +29,7 @@ of `05-SECURITY.md` for why that is a security property and not just tidiness.
 |---|---|
 | Apple silicon (M-series) | Unified memory path. The fast case |
 | Intel Mac with T2 | Supported — Intel Iris and AMD Radeon GPUs both work |
-| Intel Mac without a Metal GPU | CPU engine only, which still works |
+| Intel Mac without a Metal GPU | Search is unavailable |
 
 The kernel uses eight 32-bit limbs rather than four 64-bit ones specifically so
 the older Intel and AMD GPUs behave identically to Apple silicon. See
@@ -229,8 +229,8 @@ rm -rf ~/Library/Application\ Support/VanityMetal/
 | Build fails, out of disk | `.build` needs ~578 MB. `./build.sh --clean` frees it |
 | Window unresponsive for ~20 s on first launch | Kernels compiling. Expected, especially on T2 Macs. Cached afterwards |
 | "App is damaged" or won't open | Quarantine. Right-click → Open, or the `xattr` command in section 5 |
-| GPU self-test failed, fell back to CPU | The launch-time known-answer tests disagreed. Please report it with your device name from `session.log` |
-| No Metal device found | CPU engine only. Expected in a VM |
+| GPU self-test failed | The launch-time known-answer tests disagreed; GPU search did not start. Please report it with your device name from `session.log` |
+| No Metal device found | GPU search is unavailable. Expected in a VM |
 | Edited the kernel, nothing changed | You skipped `Tools/embed_kernels.sh` |
 
 More on tuning and day-to-day use: `06-BUILD-AND-RUN.md`.

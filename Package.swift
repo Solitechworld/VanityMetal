@@ -21,7 +21,8 @@ let package = Package(
     targets: [
         .target(
             name: "VanityMetalCore",
-            path: "Sources/VanityMetalCore"
+            path: "Sources/VanityMetalCore",
+            resources: [.process("Resources")]
         ),
         .executableTarget(
             name: "VanityMetalApp",

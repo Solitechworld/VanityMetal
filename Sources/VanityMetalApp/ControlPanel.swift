@@ -12,17 +12,42 @@ struct TargetsCard: View {
     @ObservedObject var c: SearchController
     @State private var newTarget: String = ""
 
+    private var puzzleTargetLocked: Bool {
+        c.selectedBitcoinPuzzleID != nil && c.state != .idle
+    }
+
     var body: some View {
         Card(title: "Targets", accent: Neon.magenta, systemImage: "target",
              trailing: AnyView(Pill(text: "\(c.parsedTargets.count) ACTIVE", accent: Neon.magenta))) {
             VStack(alignment: .leading, spacing: 11) {
+
+                VStack(alignment: .leading, spacing: 5) {
+                    SectionLabel(text: "BITCOIN PUZZLE PRESET")
+                    Picker("Bitcoin Puzzle", selection: Binding(
+                        get: { c.selectedBitcoinPuzzleID },
+                        set: { c.selectBitcoinPuzzle($0) })) {
+                        Text("Manual target / range").tag(Int?.none)
+                        ForEach(c.bitcoinPuzzles) { puzzle in
+                            Text("#\(puzzle.number) · \(puzzle.status.capitalized)")
+                                .tag(Int?.some(puzzle.number))
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .font(Neon.mono(11))
+                    .tint(Neon.magenta)
+                    .disabled(c.state != .idle || c.bitcoinPuzzles.isEmpty)
+                    Text("Loads the published address and inclusive hex key range. Status is from the bundled catalog snapshot.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 ForEach(Array(c.targetInputs.enumerated()), id: \.offset) { pair in
                     TargetRow(c: c, index: pair.offset)
                 }
 
                 HStack(spacing: 7) {
-                    TextField("add a prefix…", text: $newTarget)
+                    TextField("address or prefix…", text: $newTarget)
                         .textFieldStyle(.plain)
                         .font(Neon.mono(12))
                         .foregroundColor(Neon.text)
@@ -31,13 +56,15 @@ struct TargetsCard: View {
                         .overlay(RoundedRectangle(cornerRadius: 8)
                             .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
                         .onSubmit(addTarget)
+                        .disabled(puzzleTargetLocked)
 
                     Button(action: addTarget) {
                         Image(systemName: "plus").font(.system(size: 11, weight: .bold))
                     }
                     .buttonStyle(NeonButtonStyle(accent: Neon.magenta, compact: true))
                     .frame(width: 44)
-                    .disabled(newTarget.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(puzzleTargetLocked
+                              || newTarget.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 if let err = c.parseError {
@@ -86,17 +113,121 @@ struct TargetsCard: View {
     }
 
     private func addTarget() {
+        guard !puzzleTargetLocked else { return }
         let t = newTarget.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
+        c.selectBitcoinPuzzle(nil)
         c.targetInputs.append(t)
         newTarget = ""
         c.refreshTargets()
     }
 }
 
+struct KeyRangeCard: View {
+    @ObservedObject var c: SearchController
+    @State private var showingResetConfirmation = false
+
+    var body: some View {
+        Card(title: "Private key range", accent: Neon.amber, systemImage: "arrow.left.and.right") {
+            VStack(alignment: .leading, spacing: 9) {
+                rangeField("Minimum key (hex)", text: $c.keyMinimumHex,
+                           disabled: c.selectedBitcoinPuzzleID != nil)
+                rangeField("Maximum key (hex)", text: $c.keyMaximumHex,
+                           disabled: c.selectedBitcoinPuzzleID != nil)
+                if c.selectedBitcoinPuzzleID != nil {
+                    chunkSizeField
+                    Text("GPU checks every key in each chunk (step 1). Chunks are picked randomly and progress is saved after each dispatch.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let progress = c.puzzleProgressText {
+                        Text(progress).font(Neon.mono(9)).foregroundColor(Neon.lime)
+                    }
+                    HStack(spacing: 7) {
+                        Text("CURRENT CHUNK")
+                            .font(Neon.mono(8)).foregroundColor(Neon.textFaint)
+                        Spacer(minLength: 4)
+                        Text("\(Int(c.puzzleChunkProgress * 100))%")
+                            .font(Neon.mono(9, .semibold)).foregroundColor(Neon.lime)
+                    }
+                    ProgressView(value: c.puzzleChunkProgress)
+                        .tint(Neon.lime)
+                    Button("Reset saved puzzle progress") {
+                        showingResetConfirmation = true
+                    }
+                        .buttonStyle(NeonButtonStyle(accent: Neon.rose, compact: true))
+                        .disabled(c.state != .idle)
+                        .confirmationDialog(
+                            "Reset saved puzzle progress?",
+                            isPresented: $showingResetConfirmation,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Reset Progress", role: .destructive) {
+                                c.resetSelectedPuzzleProgress()
+                            }
+                            Button("Cancel", role: .cancel) { }
+                        } message: {
+                            Text("This clears the saved chunks for the selected Bitcoin Puzzle. This cannot be undone.")
+                        }
+                } else {
+                    rangeField("Minimum step", text: $c.keyMinimumStepText)
+                    rangeField("Maximum step", text: $c.keyMaximumStepText)
+                    Text("Each pass starts at min, uses one random step in the limits above, and stops at max. Then it returns to min and chooses a new step.")
+                        .font(Neon.mono(9)).foregroundColor(Neon.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = c.keyRangeError {
+                    Text(error).font(Neon.mono(9)).foregroundColor(Neon.rose)
+                }
+            }
+        }
+    }
+
+    private var chunkSizeField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel(text: "Chunk size (keys, decimal)")
+            TextField("100000000", text: $c.puzzleChunkSizeText)
+                .textFieldStyle(.plain)
+                .font(Neon.mono(10))
+                .foregroundColor(Neon.text)
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
+                .disabled(c.state != .idle)
+                .onChange(of: c.puzzleChunkSizeText) { _ in
+                    do { _ = try c.currentPuzzleChunkSize(); c.keyRangeError = nil }
+                    catch { c.keyRangeError = error.localizedDescription }
+                }
+        }
+    }
+
+    private func rangeField(_ title: String, text: Binding<String>, disabled: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SectionLabel(text: title)
+            TextField(title, text: text)
+                .textFieldStyle(.plain)
+                .font(Neon.mono(10))
+                .foregroundColor(Neon.text)
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Neon.hairline.opacity(0.7), lineWidth: 1))
+                .disabled(c.state != .idle || disabled)
+                .onChange(of: text.wrappedValue) { _ in
+                    do { _ = try c.currentKeyRange(); c.keyRangeError = nil }
+                    catch { c.keyRangeError = error.localizedDescription }
+                }
+        }
+    }
+}
+
 private struct TargetRow: View {
     @ObservedObject var c: SearchController
     let index: Int
+
+    private var puzzleTargetLocked: Bool {
+        c.selectedBitcoinPuzzleID != nil && c.state != .idle
+    }
 
     var parsed: SearchTarget? {
         guard index < c.targetInputs.count else { return nil }
@@ -106,9 +237,15 @@ private struct TargetRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 7) {
-                TextField("prefix", text: Binding(
+                TextField("address or prefix", text: Binding(
                     get: { index < c.targetInputs.count ? c.targetInputs[index] : "" },
-                    set: { if index < c.targetInputs.count { c.targetInputs[index] = $0; c.refreshTargets() } }))
+                    set: {
+                        if !puzzleTargetLocked, index < c.targetInputs.count {
+                            c.selectBitcoinPuzzle(nil)
+                            c.targetInputs[index] = $0
+                            c.refreshTargets()
+                        }
+                    }))
                     .textFieldStyle(.plain)
                     .font(Neon.mono(12.5, .semibold))
                     .foregroundColor(parsed == nil ? Neon.rose : Neon.lime)
@@ -116,9 +253,11 @@ private struct TargetRow: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.4)))
                     .overlay(RoundedRectangle(cornerRadius: 8)
                         .strokeBorder((parsed == nil ? Neon.rose : Neon.lime).opacity(0.5), lineWidth: 1))
+                    .disabled(puzzleTargetLocked)
 
                 Button {
-                    guard index < c.targetInputs.count else { return }
+                    guard !puzzleTargetLocked, index < c.targetInputs.count else { return }
+                    c.selectBitcoinPuzzle(nil)
                     c.targetInputs.remove(at: index)
                     c.refreshTargets()
                 } label: {
@@ -126,6 +265,7 @@ private struct TargetRow: View {
                 }
                 .buttonStyle(NeonButtonStyle(accent: Neon.rose, compact: true))
                 .frame(width: 34)
+                .disabled(puzzleTargetLocked)
             }
             if let p = parsed {
                 HStack(spacing: 6) {
@@ -185,12 +325,8 @@ struct EngineCard: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     SectionLabel(text: "Compute")
-                    Picker("", selection: $c.engineMode) {
-                        ForEach(EngineMode.allCases) { m in Text(m.title).tag(m) }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .disabled(c.state != .idle)
+                    Text("GPU only")
+                        .font(Neon.mono(11, .semibold)).foregroundColor(Neon.cyan)
                 }
 
                 VStack(alignment: .leading, spacing: 5) {
@@ -218,14 +354,6 @@ struct EngineCard: View {
                            format: { $0 == 0 ? "AUTO" : "\(Int($0))" },
                            value: Binding(get: { Double(c.gpuThreadCount) },
                                           set: { c.gpuThreadCount = Int($0) }))
-                    .disabled(c.state != .idle)
-
-                NeonSlider(label: "CPU workers",
-                           range: 0...Double(ProcessInfo.processInfo.activeProcessorCount), step: 1,
-                           accent: Neon.violet,
-                           format: { $0 == 0 ? "AUTO" : "\(Int($0))" },
-                           value: Binding(get: { Double(c.cpuThreadCount) },
-                                          set: { c.cpuThreadCount = Int($0) }))
                     .disabled(c.state != .idle)
 
                 NeonSlider(label: "Dispatch window",

@@ -117,8 +117,8 @@ Separate from all of the above, and it runs on the user's machine every time.
 `vanity_selftest` executes known-answer tests on the GPU at startup for field
 addition, the modular-inverse addition chain, SHA-256, RIPEMD-160 and
 Keccak-256. If the GPU disagrees with the reference values, the app **says so
-and falls back to the CPU engine automatically** rather than searching with
-arithmetic it cannot trust.
+and refuses to start the GPU-only search rather than searching with arithmetic
+it cannot trust.
 
 This is not paranoia about Apple's drivers so much as about the long tail:
 older T2 Macs, external GPUs, and whatever Metal does under memory pressure.

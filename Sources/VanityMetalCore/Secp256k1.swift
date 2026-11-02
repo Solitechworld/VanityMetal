@@ -323,6 +323,19 @@ public enum Fn {
         return sub(a, U256(UInt64(-off)))
     }
 
+    /// Multiplies a scalar by a small integer modulo the curve order.
+    public static func multiplySmall(_ value: U256, by factor: UInt64) -> U256 {
+        var n = factor
+        var addend = value
+        var result = U256.zero
+        while n > 0 {
+            if n & 1 == 1 { result = add(result, addend) }
+            n >>= 1
+            if n > 0 { addend = add(addend, addend) }
+        }
+        return result
+    }
+
     public static func random() -> U256 {
         var bytes = [UInt8](repeating: 0, count: 32)
         var out = U256.zero
@@ -488,6 +501,26 @@ public enum Secp256k1 {
         }
         let jump = multiplyGReference(U256(UInt64(2 * halfGroup + 1)))
         return (pts, jump)
+    }
+
+    /// Builds the batch table for a strided key walk. Each table entry is
+    /// i*step*G, and the jump advances by 129*walkerCount*step*G.
+    public static func buildSteppedGTable(halfGroup: Int, step: UInt64,
+                                          walkerCount: Int) -> (points: [ECPoint], jump: ECPoint) {
+        let stepPoint = multiplyG(U256(step))
+        var points: [ECPoint] = []
+        points.reserveCapacity(halfGroup)
+        var acc = Jacobian(stepPoint)
+        points.append(stepPoint)
+        if halfGroup > 1 {
+            for _ in 1..<halfGroup {
+                acc = acc.adding(affine: stepPoint)
+                points.append(acc.affine)
+            }
+        }
+        let stride = UInt64((2 * halfGroup + 1) * walkerCount)
+        let jumpScalar = Fn.multiplySmall(U256(step), by: stride)
+        return (points, multiplyG(jumpScalar))
     }
 
     /// 33-byte compressed public key.

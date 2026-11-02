@@ -181,14 +181,16 @@ public final class CPUEngine {
             if hashInRange(hash, t) {
                 hits.append(RawHit(threadId: threadId, offset: offset, iteration: iteration,
                                    targetIndex: index, kind: t.kind,
-                                   parity: point.parity, hash: hash))
+                                   parity: point.parity, hash: hash,
+                                   privateKey: Fn.addOffset(
+                                    Fn.add(startKeys[threadId],
+                                           mulAddSmall(U256(iteration), UInt64(KernelConstants.groupSize), 0)),
+                                    Int64(offset))))
             }
         }
     }
 
     public func privateKey(for hit: RawHit) -> U256? {
-        guard hit.threadId < startKeys.count else { return nil }
-        let advance = mulAddSmall(U256(hit.iteration), UInt64(KernelConstants.groupSize), 0)
-        return Fn.addOffset(Fn.add(startKeys[hit.threadId], advance), Int64(hit.offset))
+        hit.privateKey.isZero ? nil : hit.privateKey
     }
 }

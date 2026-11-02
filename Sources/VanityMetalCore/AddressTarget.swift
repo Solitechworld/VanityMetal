@@ -70,6 +70,30 @@ func mulAddSmall(_ a: U256, _ m: UInt64, _ add: UInt64) -> U256 {
     return U256(r0, r1, r2, r3)
 }
 
+/// Divides a 256-bit value by a non-zero 64-bit value without narrowing it.
+func divModSmall(_ value: U256, _ divisor: UInt64) -> (quotient: U256, remainder: UInt64) {
+    precondition(divisor > 0)
+    let words = [value.l3, value.l2, value.l1, value.l0]
+    var q = [UInt64](repeating: 0, count: 4)
+    var rem: UInt64 = 0
+    for i in 0..<4 {
+        let result = divisor.dividingFullWidth((high: rem, low: words[i]))
+        q[i] = result.quotient
+        rem = result.remainder
+    }
+    return (U256(q[3], q[2], q[1], q[0]), rem)
+}
+
+/// Exact product by a small unsigned integer. Callers validate that it fits.
+func multiplySmall(_ value: U256, _ multiplier: UInt64) -> U256? {
+    let (r0, c0) = madd64(value.l0, multiplier, 0, 0)
+    let (r1, c1) = madd64(value.l1, multiplier, 0, c0)
+    let (r2, c2) = madd64(value.l2, multiplier, 0, c1)
+    let (r3, c3) = madd64(value.l3, multiplier, 0, c2)
+    guard c3 == 0 else { return nil }
+    return U256(r0, r1, r2, r3)
+}
+
 @inline(__always)
 func shiftRight32(_ a: U256) -> U256 {
     U256((a.l0 >> 32) | (a.l1 << 32),

@@ -9,25 +9,23 @@ decisions were deliberate.
 
 ```
                     ┌──────────────────────────────────────┐
-   prefix text ───► │ AddressTarget                        │
-   "1Love"          │   parse → exact inclusive ranges     │
-                    │   over the 20-byte hash + difficulty │
+   target text ───► │ AddressTarget                        │
+   address/prefix   │   parse → exact inclusive hash ranges │
                     └──────────────┬───────────────────────┘
                                    │ [HashRange]
                                    ▼
    ┌───────────────────────────────────────────────────────┐
    │ SearchController          run loop · stats · policy    │
    └───────┬───────────────────────────────┬───────────────┘
-           │ dispatch                      │ fallback
-           ▼                               ▼
-   ┌────────────────────┐          ┌────────────────────┐
-   │ MetalEngine        │          │ CPUEngine          │
-   │  buffers, dispatch │          │  same algorithm,   │
-   │  self-test         │          │  DispatchQueue     │
-   └────────┬───────────┘          └────────┬───────────┘
-            │ RawHit                        │ RawHit
-            └───────────────┬───────────────┘
-                            ▼
+           │ dispatch
+           ▼
+   ┌────────────────────┐
+   │ MetalEngine        │
+   │ range + stride walk│
+   │ buffers, self-test │
+   └────────┬───────────┘
+            │ RawHit
+            ▼
               ┌─────────────────────────────┐
               │ VERIFY on the CPU           │
               │  k → k·G → hash → address   │
@@ -58,9 +56,9 @@ trusted.** It reports candidates; the CPU decides whether they are real.
 | `Hashing.swift` | SHA-256 (via CryptoKit), RIPEMD-160, Keccak-256 — the last two implemented here because Apple ships neither |
 | `Encoding.swift` | Base58Check, Bech32, WIF, EIP-55 checksummed hex |
 | `AddressTarget.swift` | prefix → `[HashRange]` + true difficulty. See `03-ADDRESS-MATH.md` |
-| `MetalEngine.swift` | device enumeration, buffer layout, dispatch sizing, kernel self-test |
+| `MetalEngine.swift` | device enumeration, bounded strided key walk, buffer layout, dispatch sizing, kernel self-test |
 | `MetalShaderSource.swift` | **generated.** The `.metal` file embedded as a Swift string |
-| `CPUEngine.swift` | the same walk on CPU cores — fallback, and the cross-check oracle |
+| `CPUEngine.swift` | CPU reference engine used by the verification executable; not used for app searches |
 | `SearchController.swift` | run loop, verification, statistics, thermal policy, logging |
 | `Persistence.swift` | result store, session log, preferences |
 
@@ -81,18 +79,11 @@ cross-check, which XCTest cannot do portably.
 
 ---
 
-## Why there are two engines
+## CPU verification
 
-`CPUEngine` is not a toy. It runs the identical algorithm — same group size,
-same batch inversion, same walk — on `DispatchQueue.concurrentPerform`. That
-buys three things:
-
-1. **A fallback.** If the GPU self-test fails, or the machine has no usable
-   Metal device, the search continues rather than refusing to run.
-2. **An oracle.** The verification suite runs both engines from the same seed
-   and asserts they report *identical* hits — not merely plausible ones. That
-   is how you find a shader bug that only shows up one time in 10⁶.
-3. **A quiet mode.** On a fanless laptop, CPU-only is sometimes the sane choice.
+`CPUEngine` remains as an independent reference for the verification
+executable. The application uses the GPU for searches and verifies each result
+on the CPU before displaying or saving it.
 
 ---
 
@@ -104,8 +95,9 @@ One iteration of the loop, per dispatch:
    near a target wall-clock window (default 100 ms) so the interface stays
    responsive.
 2. `MetalEngine` encodes `vanity_search` with `threadCount` threads.
-3. Each thread advances its walker by `batchIterations × 129` keys, testing
-   every generated hash against every target range.
+3. GPU walkers partition the selected arithmetic progression. A candidate is
+   `minimum + index × step`; the final dispatch masks indices beyond the
+   inclusive maximum.
 4. Hits are appended to a device buffer via an atomic counter, capped at
    `maxResults` per dispatch.
 5. The CPU reads the result buffer, re-derives each hit from scratch, and

@@ -65,7 +65,7 @@ struct VMParams {
     uint maxResults;
     uint threadCount;
     uint iterationBase;
-    uint _r0;
+    uint validKeyCount;  // zero means all candidates valid; otherwise dispatch-local key count
     uint _r1;
 };
 
@@ -737,6 +737,10 @@ kernel void vanity_search(constant VMParams        &params   [[buffer(0)]],
                 FE ry = fe_sub(fe_mul(lam, fe_sub(px, rx)), py);
                 int offset = (sign == 0) ? mag : -mag;
 
+                uint candidate = iter * nThreads * GRP_SIZE + tid * GRP_SIZE
+                               + uint(offset + (int)GRP_HALF);
+                if (params.validKeyCount != 0u && candidate >= params.validKeyCount) continue;
+
                 uint ex[8], ey[8];
                 fe_to_be_words(rx, ex);
                 fe_to_be_words(ry, ey);
@@ -772,6 +776,12 @@ kernel void vanity_search(constant VMParams        &params   [[buffer(0)]],
 
         // ---- the centre point itself (offset 0) ----------------------------
         {
+            uint candidate = iter * nThreads * GRP_SIZE + tid * GRP_SIZE + GRP_HALF;
+            if (params.validKeyCount != 0u && candidate >= params.validKeyCount) {
+                px = nextX;
+                py = nextY;
+                continue;
+            }
             uint ex[8], ey[8];
             fe_to_be_words(px, ex);
             fe_to_be_words(py, ey);

@@ -48,6 +48,7 @@ public struct RawHit: Sendable {
     public let kind: AddressKind
     public let parity: UInt8
     public let hash: [UInt8]
+    public let privateKey: U256
 }
 
 public enum EngineError: LocalizedError {
@@ -55,6 +56,8 @@ public enum EngineError: LocalizedError {
     case compileFailed(String)
     case functionMissing(String)
     case bufferAllocationFailed
+    case invalidWalkStart
+    case incompatibleRangeTransition
     case selfTestFailed(UInt32)
 
     public var errorDescription: String? {
@@ -63,6 +66,8 @@ public enum EngineError: LocalizedError {
         case .compileFailed(let m): return "The GPU kernels did not compile: \(m)"
         case .functionMissing(let n): return "Kernel function ‘\(n)’ is missing."
         case .bufferAllocationFailed: return "The GPU refused to allocate the search buffers."
+        case .invalidWalkStart: return "This interval places a GPU walker at the invalid zero private key. Adjust the minimum or step slightly."
+        case .incompatibleRangeTransition: return "The next GPU key range cannot reuse the current engine buffers because its step changed."
         case .selfTestFailed(let mask):
             var parts: [String] = []
             if mask & 1 != 0 { parts.append("field addition") }
@@ -104,6 +109,12 @@ public final class MetalEngine {
     private var targetKinds: [AddressKind] = []
     private var hashPaths: UInt32 = 0
     private let maxResults = 4096
+    private var keyRange: KeySearchRange?
+    private var keysConsumedInRange = U256.zero
+    public var isExhausted: Bool {
+        guard let keyRange else { return false }
+        return keysConsumedInRange >= keyRange.keyCount
+    }
 
     // MARK: Discovery
 
@@ -219,8 +230,11 @@ public final class MetalEngine {
 
     // MARK: Preparation
 
-    public func prepare(targets: [HashRange], threadCount: Int, seed: U256? = nil) throws {
+    public func prepare(targets: [HashRange], threadCount: Int, seed: U256? = nil,
+                        keyRange: KeySearchRange? = nil) throws {
         self.threadCount = max(1, threadCount)   // the kernel guards on tid >= threadCount
+        self.keyRange = keyRange
+        self.keysConsumedInRange = .zero
         self.targetKinds = targets.map(\.kind)
         self.hashPaths = targets.reduce(UInt32(0)) { $0 | $1.kind.hashPath }
         self.iterationsDone = 0
@@ -238,13 +252,16 @@ public final class MetalEngine {
         targetBuf = makeBuffer(targetWords)
 
         // ---- G table ------------------------------------------------------
-        let (table, jump) = Secp256k1.buildGTable(halfGroup: KernelConstants.groupHalf)
+        let (table, jump) = keyRange.map {
+            Secp256k1.buildSteppedGTable(halfGroup: KernelConstants.groupHalf,
+                                         step: $0.step, walkerCount: self.threadCount)
+        } ?? Secp256k1.buildGTable(halfGroup: KernelConstants.groupHalf)
         gTabXBuf = makeBuffer(table.flatMap { $0.x.metalLimbs })
         gTabYBuf = makeBuffer(table.flatMap { $0.y.metalLimbs })
         jumpBuf = makeBuffer(jump.x.metalLimbs + jump.y.metalLimbs)
 
         // ---- starting points ----------------------------------------------
-        try seedStartPoints(base: seed)
+        try seedStartPoints(base: seed, keyRange: keyRange)
 
         // ---- results ------------------------------------------------------
         // Batch-inversion scratch, laid out [slot][limb][thread] so a SIMD group
@@ -262,18 +279,50 @@ public final class MetalEngine {
         }
     }
 
+    /// Advances to another range with the same key step while keeping the
+    /// compiled pipeline and size-dependent GPU buffers alive. Puzzle scans
+    /// switch ranges frequently; rebuilding the private scratch buffer for
+    /// every chunk creates substantial allocator churn over long runs.
+    public func prepareNextRange(_ nextRange: KeySearchRange) throws {
+        guard let currentRange = keyRange,
+              currentRange.step == nextRange.step,
+              startXBuf != nil, startYBuf != nil else {
+            throw EngineError.incompatibleRangeTransition
+        }
+        keyRange = nextRange
+        keysConsumedInRange = .zero
+        iterationsDone = 0
+        try seedStartPoints(keyRange: nextRange)
+    }
+
     /// Picks one random 256-bit base key and gives thread *i* the key
     /// `base + i * span`, where the span is large enough that no two threads
     /// can ever walk into each other's territory.
-    public func seedStartPoints(base: U256? = nil) throws {
-        let baseKey = base ?? Fn.random()
-        let span = U256(0, 0, 1, 0)     // 2^128 keys of headroom per thread
+    public func seedStartPoints(base: U256? = nil, keyRange: KeySearchRange? = nil) throws {
+        let baseKey = keyRange?.minimum ?? base ?? Fn.random()
+        let span = U256(0, 0, 1, 0)     // legacy random mode: 2^128 headroom per thread
 
         var keys = [U256](repeating: .zero, count: threadCount)
-        var acc = baseKey
-        for i in 0..<threadCount {
-            keys[i] = acc
-            acc = Fn.add(acc, span)
+        if let keyRange {
+            let perWalker = UInt64(KernelConstants.groupSize)
+            for i in 0..<threadCount {
+                let blockStart = UInt64(i) * perWalker
+                let centerIndex = blockStart + UInt64(KernelConstants.groupHalf)
+                if U256(blockStart) < keyRange.keyCount {
+                    let delta = multiplySmall(U256(keyRange.step), centerIndex) ?? .zero
+                    let center = Fn.add(keyRange.minimum, delta)
+                    guard !center.isZero else { throw EngineError.invalidWalkStart }
+                    keys[i] = center
+                } else {
+                    keys[i] = .one // inactive lanes are masked by validKeyCount
+                }
+            }
+        } else {
+            var acc = baseKey
+            for i in 0..<threadCount {
+                keys[i] = acc
+                acc = Fn.add(acc, span)
+            }
         }
         self.startKeys = keys
 
@@ -301,8 +350,8 @@ public final class MetalEngine {
             }
         }
 
-        startXBuf = makeBuffer(xs)
-        startYBuf = makeBuffer(ys)
+        startXBuf = updateBuffer(xs, reusing: startXBuf)
+        startYBuf = updateBuffer(ys, reusing: startYBuf)
         iterationsDone = 0
     }
 
@@ -344,7 +393,25 @@ public final class MetalEngine {
             throw EngineError.bufferAllocationFailed
         }
         // Clamped so a caller asking for a huge batch cannot lock up the display.
-        let iterations = max(1, min(iterations, maxIterationsPerDispatch))
+        var iterations = max(1, min(iterations, maxIterationsPerDispatch))
+        var validKeyCount: UInt32 = 0
+        if let keyRange {
+            if isExhausted { return ([], 0) }
+            let perIteration = UInt64(threadCount * KernelConstants.groupSize)
+            iterations = min(iterations, max(1, Int(UInt32.max / UInt32(perIteration))))
+            let requested = multiplySmall(U256(perIteration), UInt64(iterations)) ?? .zero
+            let remaining = U256.subb(keyRange.keyCount, keysConsumedInRange).0
+            if remaining < requested {
+                let remain64 = remaining.l3 == 0 && remaining.l2 == 0 && remaining.l1 == 0
+                    ? remaining.l0 : UInt64.max
+                guard remain64 <= UInt64(UInt32.max) else {
+                    throw EngineError.bufferAllocationFailed
+                }
+                validKeyCount = UInt32(remain64)
+                let perStep = max(1, threadCount * KernelConstants.groupSize)
+                iterations = max(1, Int((remain64 + UInt64(perStep) - 1) / UInt64(perStep)))
+            }
+        }
         let dispatchStart = Date()
 
         memset(counterBuf.contents(), 0, 4)
@@ -354,7 +421,8 @@ public final class MetalEngine {
             UInt32(iterations),
             UInt32(maxResults),
             UInt32(threadCount),
-            0, 0, 0
+            UInt32(truncatingIfNeeded: iterationsDone),
+            validKeyCount, 0
         ]
         params.withUnsafeBytes { raw in
             paramBuf.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
@@ -388,6 +456,7 @@ public final class MetalEngine {
         }
 
         let base = iterationsDone
+        let consumedBefore = keysConsumedInRange
         iterationsDone &+= UInt64(iterations)
 
         let found = Int(counterBuf.contents().bindMemory(to: UInt32.self, capacity: 1).pointee)
@@ -406,17 +475,35 @@ public final class MetalEngine {
                     hash.append(UInt8((v >> 24) & 0xFF)); hash.append(UInt8((v >> 16) & 0xFF))
                     hash.append(UInt8((v >> 8) & 0xFF));  hash.append(UInt8(v & 0xFF))
                 }
-                hits.append(RawHit(threadId: Int(words[o]),
-                                   offset: Int(Int32(bitPattern: words[o + 1])),
-                                   iteration: base &+ UInt64(words[o + 2]),
+                let tid = Int(words[o])
+                let offset = Int(Int32(bitPattern: words[o + 1]))
+                let localIteration = UInt64(words[o + 2] &- UInt32(truncatingIfNeeded: base))
+                let candidateOffset = localIteration * UInt64(threadCount * KernelConstants.groupSize)
+                    + UInt64(tid * KernelConstants.groupSize + offset + KernelConstants.groupHalf)
+                let ordinal = U256.addc(consumedBefore, U256(candidateOffset)).0
+                let hitKey: U256
+                if let keyRange {
+                    let delta = multiplySmall(ordinal, keyRange.step) ?? .zero
+                    hitKey = U256.addc(keyRange.minimum, delta).0
+                } else {
+                    let advance = mulAddSmall(U256(base &+ localIteration),
+                                              UInt64(KernelConstants.groupSize), 0)
+                    hitKey = Fn.addOffset(Fn.add(startKeys[tid], advance), Int64(offset))
+                }
+                hits.append(RawHit(threadId: tid,
+                                   offset: offset,
+                                   iteration: base &+ localIteration,
                                    targetIndex: Int(words[o + 3]),
                                    kind: kind,
                                    parity: UInt8(words[o + 5] & 1),
-                                   hash: hash))
+                                   hash: hash,
+                                   privateKey: hitKey))
             }
         }
 
-        let scanned = UInt64(threadCount) * UInt64(iterations) * UInt64(KernelConstants.groupSize)
+        let fullScanned = UInt64(threadCount) * UInt64(iterations) * UInt64(KernelConstants.groupSize)
+        let scanned = validKeyCount > 0 ? UInt64(validKeyCount) : fullScanned
+        if keyRange != nil { keysConsumedInRange = U256.addc(keysConsumedInRange, U256(scanned)).0 }
 
         // Learn this device's real throughput so the next dispatch can be sized
         // to the hardware instead of to a guess.
@@ -480,10 +567,7 @@ public final class MetalEngine {
 
     /// Rebuilds the private key a hit corresponds to.
     public func privateKey(for hit: RawHit) -> U256? {
-        guard hit.threadId < startKeys.count else { return nil }
-        let advance = mulAddSmall(U256(hit.iteration), UInt64(KernelConstants.groupSize), 0)
-        let walked = Fn.add(startKeys[hit.threadId], advance)
-        return Fn.addOffset(walked, Int64(hit.offset))
+        hit.privateKey.isZero ? nil : hit.privateKey
     }
 
     // MARK: helpers
@@ -491,6 +575,18 @@ public final class MetalEngine {
     private func makeBuffer(_ words: [UInt32]) -> MTLBuffer? {
         words.withUnsafeBytes { raw in
             device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
+        }
+    }
+
+    private func updateBuffer(_ words: [UInt32], reusing existing: MTLBuffer?) -> MTLBuffer? {
+        words.withUnsafeBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return existing }
+            if let existing, existing.length >= raw.count {
+                existing.contents().copyMemory(from: baseAddress, byteCount: raw.count)
+                return existing
+            }
+            return device.makeBuffer(bytes: baseAddress, length: raw.count,
+                                     options: .storageModeShared)
         }
     }
 

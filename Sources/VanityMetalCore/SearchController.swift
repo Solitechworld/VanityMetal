@@ -114,6 +114,12 @@ public final class SearchController: ObservableObject {
 
     // Configuration
     @Published public var targetInputs: [String] = ["1Neo"]
+    @Published public private(set) var selectedBitcoinPuzzleID: Int? = nil
+    @Published public var keyMinimumHex: String = "1"
+    @Published public var keyMaximumHex: String = U256.subb(Fn.n, .one).0.hexString
+    @Published public var keyMinimumStepText: String = "1"
+    @Published public var keyMaximumStepText: String = "1"
+    @Published public var puzzleChunkSizeText: String = "100000000"
     @Published public var forcedKind: AddressKind? = nil
     @Published public var caseSensitive: Bool = true
     @Published public var searchUncompressed: Bool = false
@@ -146,6 +152,9 @@ public final class SearchController: ObservableObject {
     @Published public private(set) var log: [LogLine] = []
     @Published public private(set) var parsedTargets: [SearchTarget] = []
     @Published public private(set) var parseError: String? = nil
+    @Published public var keyRangeError: String? = nil
+    @Published public private(set) var puzzleProgressText: String? = nil
+    @Published public private(set) var puzzleChunkProgress: Double = 0
     @Published public private(set) var thermalState: ProcessInfo.ThermalState = .nominal
     @Published public private(set) var gpuSelfTestPassed: Bool? = nil
 
@@ -173,10 +182,11 @@ public final class SearchController: ObservableObject {
             }
         SessionLog.start()
         refreshTargets()
+        do { _ = try currentKeyRange() } catch { keyRangeError = error.localizedDescription }
         results = ResultStore.load()
         note("VanityMetal online. \(devices.count) Metal device\(devices.count == 1 ? "" : "s") detected.", .info)
         for d in devices { note("· \(d.name) — \(d.summary)", .info) }
-        if devices.isEmpty { note("No GPU found; the CPU engine will be used.", .warn) }
+        if devices.isEmpty { note("No GPU found; GPU-only search is unavailable.", .warn) }
     }
 
     deinit {
@@ -207,6 +217,47 @@ public final class SearchController: ObservableObject {
         }
         parsedTargets = parsed
         parseError = firstError
+    }
+
+    public var bitcoinPuzzles: [BitcoinPuzzle] { BitcoinPuzzleCatalog.puzzles }
+
+    public func selectBitcoinPuzzle(_ puzzleID: Int?) {
+        guard state == .idle else { return }
+        selectedBitcoinPuzzleID = puzzleID
+        guard let puzzleID,
+              let puzzle = BitcoinPuzzleCatalog.puzzles.first(where: { $0.number == puzzleID }) else {
+            return
+        }
+        targetInputs = [puzzle.address]
+        keyMinimumHex = puzzle.minimumKeyHex
+        keyMaximumHex = puzzle.maximumKeyHex
+        keyMinimumStepText = "1"
+        keyMaximumStepText = "1"
+        forcedKind = nil
+        keyRangeError = nil
+        let progress = try? PuzzleChunkCoordinator(
+            puzzleID: puzzleID,
+            minimum: U256(hex: puzzle.minimumKeyHex)!,
+            maximum: U256(hex: puzzle.maximumKeyHex)!,
+            chunkSize: currentPuzzleChunkSize())
+        puzzleProgressText = progress?.progressSummary
+        puzzleChunkProgress = progress?.activeChunkProgress ?? 0
+        refreshTargets()
+        note("Loaded Bitcoin Puzzle #\(puzzle.number) (catalog status: \(puzzle.status)).", .info)
+    }
+
+    public func currentPuzzleChunkSize() throws -> UInt64 {
+        let text = puzzleChunkSizeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let size = UInt64(text), size > 0 else { throw PuzzleChunkError.invalidConfiguration }
+        return size
+    }
+
+    public func resetSelectedPuzzleProgress() {
+        guard let puzzleID = selectedBitcoinPuzzleID else { return }
+        PuzzleChunkCoordinator.resetProgress(puzzleID: puzzleID)
+        puzzleProgressText = "No saved progress"
+        puzzleChunkProgress = 0
+        note("Saved chunks for Bitcoin Puzzle #\(puzzleID) were reset.", .warn)
     }
 
     /// Combined difficulty when several prefixes are hunted at once.
@@ -246,6 +297,18 @@ public final class SearchController: ObservableObject {
         guard state == .idle else { return }
 
         refreshTargets()
+        let keyRange: KeySearchRange
+        let puzzleID = selectedBitcoinPuzzleID
+        let chunkSize: UInt64?
+        do {
+            keyRange = try currentKeyRange()
+            chunkSize = puzzleID == nil ? nil : try currentPuzzleChunkSize()
+            keyRangeError = nil
+        } catch {
+            keyRangeError = error.localizedDescription
+            note(error.localizedDescription, .bad)
+            return
+        }
         guard !parsedTargets.isEmpty else {
             note(parseError ?? "Nothing to search for — add a valid prefix first.", .bad)
             return
@@ -265,20 +328,25 @@ public final class SearchController: ObservableObject {
         state = .preparing
 
         let ranges = parsedTargets.flatMap(\.ranges)
-        let mode = engineMode
         let deviceID = selectedDeviceID
         let gpuThreads = gpuThreadCount
-        let cpuThreads = cpuThreadCount
 
         let t = Thread { [weak self] in
-            self?.runLoop(ranges: ranges, mode: mode, deviceID: deviceID,
-                          gpuThreads: gpuThreads, cpuThreads: cpuThreads)
+            self?.runLoop(ranges: ranges, keyRange: keyRange, deviceID: deviceID,
+                          gpuThreads: gpuThreads, puzzleID: puzzleID,
+                          chunkSize: chunkSize)
         }
         t.name = "VanityMetal.search"
         t.qualityOfService = .userInitiated
         t.stackSize = 8 << 20
         worker = t
         t.start()
+    }
+
+    public func currentKeyRange() throws -> KeySearchRange {
+        try KeySearchRange.parse(minimum: keyMinimumHex, maximum: keyMaximumHex,
+                                 minimumStep: keyMinimumStepText,
+                                 maximumStep: keyMaximumStepText)
     }
 
     public func pause() {
@@ -371,12 +439,13 @@ public final class SearchController: ObservableObject {
         state = .preparing
         note("Benchmarking for \(Int(seconds))s — thermal guard off, no targets.", .info)
 
-        let mode = engineMode, deviceID = selectedDeviceID
-        let gpuThreads = gpuThreadCount, cpuThreads = cpuThreadCount
+        let deviceID = selectedDeviceID
+        let gpuThreads = gpuThreadCount
         let t = Thread { [weak self] in
             guard let engine = self else { return }
-            engine.runLoop(ranges: [range], mode: mode, deviceID: deviceID,
-                           gpuThreads: gpuThreads, cpuThreads: cpuThreads)
+            let keyRange = try! KeySearchRange(minimum: .one, maximum: U256.subb(Fn.n, .one).0, step: 1)
+            engine.runLoop(ranges: [range], keyRange: keyRange, deviceID: deviceID,
+                           gpuThreads: gpuThreads)
             engine.post { c in
                 c.flags.deadline = nil
                 c.flags.thermalGuard = c.thermalGuard
@@ -393,13 +462,24 @@ public final class SearchController: ObservableObject {
 
     // MARK: The loop (runs off the main thread)
 
-    private func runLoop(ranges: [HashRange], mode: EngineMode, deviceID: UInt64?,
-                         gpuThreads: Int, cpuThreads: Int) {
-        var metalEngine: MetalEngine?
-        var cpuEngine: CPUEngine?
+    private func runLoop(ranges: [HashRange], keyRange: KeySearchRange, deviceID: UInt64?,
+                         gpuThreads: Int, puzzleID: Int? = nil, chunkSize: UInt64? = nil) {
+        // Keep App Nap and idle system sleep from suspending an active search
+        // when the app is in the background. The display may still sleep.
+        let processInfo = ProcessInfo.processInfo
+        func beginSearchActivity() -> NSObjectProtocol {
+            processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                      reason: "Running the requested GPU search")
+        }
+        var searchActivity: NSObjectProtocol? = beginSearchActivity()
+        defer {
+            if let searchActivity { processInfo.endActivity(searchActivity) }
+        }
 
-        if mode == .gpu || mode == .both {
-            if let dev = MetalEngine.device(matching: deviceID) {
+        var metalEngine: MetalEngine?
+        var chunkCoordinator: PuzzleChunkCoordinator?
+
+        if let dev = MetalEngine.device(matching: deviceID) {
                 post { $0.note("Compiling Metal kernels for \(dev.name)…", .info) }
                 do {
                     let e = try MetalEngine(device: dev)
@@ -410,7 +490,30 @@ public final class SearchController: ObservableObject {
                         $0.activeDeviceName = dev.name
                     }
                     let threads = gpuThreads > 0 ? gpuThreads : e.suggestedThreadCount
-                    try e.prepare(targets: ranges, threadCount: threads)
+                    let initialRange: KeySearchRange
+                    if let puzzleID, let chunkSize {
+                        let coordinator = try PuzzleChunkCoordinator(
+                            puzzleID: puzzleID, minimum: keyRange.minimum,
+                            maximum: keyRange.maximum, chunkSize: chunkSize)
+                        guard let firstChunk = try coordinator.nextRange() else {
+                            post {
+                                $0.puzzleProgressText = coordinator.progressSummary
+                                $0.puzzleChunkProgress = coordinator.activeChunkProgress
+                                $0.note("All chunks for Bitcoin Puzzle #\(puzzleID) are complete.", .good)
+                                $0.state = .idle
+                            }
+                            return
+                        }
+                        chunkCoordinator = coordinator
+                        initialRange = firstChunk
+                        post {
+                            $0.puzzleProgressText = coordinator.progressSummary
+                            $0.puzzleChunkProgress = coordinator.activeChunkProgress
+                        }
+                    } else {
+                        initialRange = keyRange
+                    }
+                    try e.prepare(targets: ranges, threadCount: threads, keyRange: initialRange)
                     let actual = e.threadCount
                     post {
                         $0.activeWalkers = actual
@@ -423,31 +526,25 @@ public final class SearchController: ObservableObject {
                         $0.note(error.localizedDescription, .bad)
                     }
                 }
-            } else {
-                post { $0.note("No Metal device available.", .bad) }
-            }
+        } else {
+            post { $0.note("No Metal device available.", .bad) }
         }
 
-        if mode == .cpu || mode == .both || metalEngine == nil {
-            let e = CPUEngine()
-            let threads = cpuThreads > 0 ? cpuThreads : e.suggestedThreadCount
-            e.prepare(targets: ranges, threadCount: threads)
-            cpuEngine = e
-            post { $0.note("CPU engine armed: \(threads) worker\(threads == 1 ? "" : "s").", .info) }
-            if metalEngine == nil {
-                post { $0.activeDeviceName = "CPU"; $0.activeWalkers = threads }
-            }
-        }
-
-        guard metalEngine != nil || cpuEngine != nil else {
-            post { $0.note("No engine could be started.", .bad); $0.state = .idle }
+        guard metalEngine != nil else {
+            post { $0.note("GPU engine could not be started; GPU-only mode does not fall back to CPU.", .bad); $0.state = .idle }
             return
         }
 
         post { $0.state = .running }
-        SessionLog.write("run loop entered; gpu=\(metalEngine != nil) cpu=\(cpuEngine != nil)")
+        var activeKeyRange = keyRange
+        if let chunkCoordinator {
+            SessionLog.write("Puzzle #\(chunkCoordinator.puzzleID) chunk scan: size=\(chunkCoordinator.chunkSize), \(chunkCoordinator.progressSummary)")
+            post { $0.note("Puzzle #\(chunkCoordinator.puzzleID): resuming random chunk scan (\(chunkCoordinator.progressSummary)).", .info) }
+        } else {
+            SessionLog.write("GPU run loop entered; key count=\(keyRange.keyCount.hexString); step=\(keyRange.step)")
+            post { $0.note("First cycle selected step \(keyRange.step).", .info) }
+        }
 
-        var cpuIterations = 1       // the GPU sizes itself; the CPU is tuned here
         var dispatchCount = 0
         var totalScanned: UInt64 = 0
         let started = Date()
@@ -456,7 +553,15 @@ public final class SearchController: ObservableObject {
 
         while !flags.stop {
             if let deadline = flags.deadline, Date() >= deadline { break }
-            if flags.pause { Thread.sleep(forTimeInterval: 0.15); continue }
+            if flags.pause {
+                if let activity = searchActivity {
+                    processInfo.endActivity(activity)
+                    searchActivity = nil
+                }
+                Thread.sleep(forTimeInterval: 0.15)
+                if !flags.pause, !flags.stop { searchActivity = beginSearchActivity() }
+                continue
+            }
 
             // Fanless MacBooks otherwise clock themselves into the floor.
             if flags.thermalGuard {
@@ -494,26 +599,47 @@ public final class SearchController: ObservableObject {
                     scanned &+= r.keysScanned
                     verify(r.hits, engine: .metal(e), totalScanned: totalScanned &+ scanned)
                 } catch {
-                    post { $0.note("GPU dispatch failed: \(error.localizedDescription). Falling back to CPU.", .bad) }
+                    post { $0.note("GPU dispatch failed: \(error.localizedDescription).", .bad) }
                     metalEngine = nil
-                    if cpuEngine == nil {
-                        let e2 = CPUEngine()
-                        let threads = cpuThreads > 0 ? cpuThreads : e2.suggestedThreadCount
-                        e2.prepare(targets: ranges, threadCount: threads)
-                        cpuEngine = e2
-                        post { $0.activeDeviceName = "CPU"; $0.activeWalkers = threads }
-                    }
+                    flags.stop = true
                 }
             }
-            if let e = cpuEngine, metalEngine == nil || mode == .both {
-                let cpuStart = Date()
-                let r = e.run(iterations: cpuIterations)
-                scanned &+= r.keysScanned
-                verify(r.hits, engine: .cpu(e), totalScanned: totalScanned &+ scanned)
-                let dt = Date().timeIntervalSince(cpuStart)
-                if dt > 0 {
-                    let scale = min(max(0.15 / max(dt, 0.001), 0.5), 2.0)
-                    cpuIterations = max(1, min(4096, Int((Double(cpuIterations) * scale).rounded())))
+            if let e = metalEngine, let coordinator = chunkCoordinator {
+                do {
+                    _ = try coordinator.recordScanned(scanned)
+                    let progress = coordinator.progressSummary
+                    let chunkProgress = coordinator.activeChunkProgress
+                    post {
+                        $0.puzzleProgressText = progress
+                        $0.puzzleChunkProgress = chunkProgress
+                    }
+                    if e.isExhausted, !flags.stop {
+                        if let nextChunk = try coordinator.nextRange() {
+                            try e.prepareNextRange(nextChunk)
+                            SessionLog.write("Puzzle #\(coordinator.puzzleID): started another random chunk; \(progress)")
+                            post { $0.note("Chunk complete. Selected another random uncompleted chunk. \(progress)", .info) }
+                        } else {
+                            flags.stop = true
+                            post {
+                                $0.note("All chunks for Bitcoin Puzzle #\(coordinator.puzzleID) are complete.", .good)
+                            }
+                        }
+                    }
+                } catch {
+                    post { $0.note("Puzzle progress could not be saved: \(error.localizedDescription).", .bad) }
+                    flags.stop = true
+                }
+            } else if let e = metalEngine, e.isExhausted, !flags.stop {
+                let nextRange = activeKeyRange.nextCycle()
+                do {
+                    try e.prepare(targets: ranges, threadCount: e.threadCount,
+                                  keyRange: nextRange)
+                    activeKeyRange = nextRange
+                    SessionLog.write("Key range exhausted; restarting from minimum with step=\(nextRange.step)")
+                    post { $0.note("Range complete. Restarted at minimum with random step \(nextRange.step).", .info) }
+                } catch {
+                    post { $0.note("Could not restart key-range cycle: \(error.localizedDescription).", .bad) }
+                    flags.stop = true
                 }
             }
 
@@ -544,6 +670,11 @@ public final class SearchController: ObservableObject {
             }
         }
 
+        if let chunkCoordinator {
+            do { try chunkCoordinator.flushProgress() }
+            catch { post { $0.note("Final puzzle progress checkpoint failed: \(error.localizedDescription)", .bad) } }
+        }
+
         let total = totalScanned
         post {
             $0.keysScanned = total
@@ -553,10 +684,7 @@ public final class SearchController: ObservableObject {
         }
     }
 
-    private enum EngineRef {
-        case metal(MetalEngine)
-        case cpu(CPUEngine)
-    }
+    private enum EngineRef { case metal(MetalEngine) }
 
     /// Every reported hit is re-derived from scratch and the address rebuilt
     /// and string-compared. Nothing reaches the UI unverified — a bug in the
@@ -567,7 +695,6 @@ public final class SearchController: ObservableObject {
             let key: U256?
             switch engine {
             case .metal(let e): key = e.privateKey(for: hit)
-            case .cpu(let e):   key = e.privateKey(for: hit)
             }
             guard let key, !key.isZero else {
                 post { $0.note("A hit could not be traced back to a key — ignored.", .warn) }
