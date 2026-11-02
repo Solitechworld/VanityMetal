@@ -119,9 +119,10 @@ Preset statuses come from a dated catalog snapshot; see
 - **Menu-bar status.** The macOS menu bar shows live GPU throughput and the
   number of found results. Its menu also shows search state and checked-key
   count, with controls to start, pause, resume, stop, reopen, or quit the app.
-- **Background activity.** During a user-started search, the app tells macOS it
-  is performing active work to reduce App Nap throttling. This does not prevent
-  the Mac from sleeping while idle.
+- **Background activity.** During an active search, the app tells macOS it is
+  performing user-requested work and prevents idle system sleep, reducing the
+  chance that a long scan is suspended in the background. The display may
+  still sleep. The activity assertion is released while paused and after stop.
 
 ---
 

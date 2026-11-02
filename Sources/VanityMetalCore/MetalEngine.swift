@@ -57,6 +57,7 @@ public enum EngineError: LocalizedError {
     case functionMissing(String)
     case bufferAllocationFailed
     case invalidWalkStart
+    case incompatibleRangeTransition
     case selfTestFailed(UInt32)
 
     public var errorDescription: String? {
@@ -66,6 +67,7 @@ public enum EngineError: LocalizedError {
         case .functionMissing(let n): return "Kernel function ‘\(n)’ is missing."
         case .bufferAllocationFailed: return "The GPU refused to allocate the search buffers."
         case .invalidWalkStart: return "This interval places a GPU walker at the invalid zero private key. Adjust the minimum or step slightly."
+        case .incompatibleRangeTransition: return "The next GPU key range cannot reuse the current engine buffers because its step changed."
         case .selfTestFailed(let mask):
             var parts: [String] = []
             if mask & 1 != 0 { parts.append("field addition") }
@@ -277,6 +279,22 @@ public final class MetalEngine {
         }
     }
 
+    /// Advances to another range with the same key step while keeping the
+    /// compiled pipeline and size-dependent GPU buffers alive. Puzzle scans
+    /// switch ranges frequently; rebuilding the private scratch buffer for
+    /// every chunk creates substantial allocator churn over long runs.
+    public func prepareNextRange(_ nextRange: KeySearchRange) throws {
+        guard let currentRange = keyRange,
+              currentRange.step == nextRange.step,
+              startXBuf != nil, startYBuf != nil else {
+            throw EngineError.incompatibleRangeTransition
+        }
+        keyRange = nextRange
+        keysConsumedInRange = .zero
+        iterationsDone = 0
+        try seedStartPoints(keyRange: nextRange)
+    }
+
     /// Picks one random 256-bit base key and gives thread *i* the key
     /// `base + i * span`, where the span is large enough that no two threads
     /// can ever walk into each other's territory.
@@ -332,8 +350,8 @@ public final class MetalEngine {
             }
         }
 
-        startXBuf = makeBuffer(xs)
-        startYBuf = makeBuffer(ys)
+        startXBuf = updateBuffer(xs, reusing: startXBuf)
+        startYBuf = updateBuffer(ys, reusing: startYBuf)
         iterationsDone = 0
     }
 
@@ -557,6 +575,18 @@ public final class MetalEngine {
     private func makeBuffer(_ words: [UInt32]) -> MTLBuffer? {
         words.withUnsafeBytes { raw in
             device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
+        }
+    }
+
+    private func updateBuffer(_ words: [UInt32], reusing existing: MTLBuffer?) -> MTLBuffer? {
+        words.withUnsafeBytes { raw in
+            guard let baseAddress = raw.baseAddress else { return existing }
+            if let existing, existing.length >= raw.count {
+                existing.contents().copyMemory(from: baseAddress, byteCount: raw.count)
+                return existing
+            }
+            return device.makeBuffer(bytes: baseAddress, length: raw.count,
+                                     options: .storageModeShared)
         }
     }
 

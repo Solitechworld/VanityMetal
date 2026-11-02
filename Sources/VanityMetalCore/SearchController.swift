@@ -464,12 +464,17 @@ public final class SearchController: ObservableObject {
 
     private func runLoop(ranges: [HashRange], keyRange: KeySearchRange, deviceID: UInt64?,
                          gpuThreads: Int, puzzleID: Int? = nil, chunkSize: UInt64? = nil) {
-        // Keep macOS App Nap from throttling this user-started GPU workload
-        // when the window is inactive. The Mac may still sleep while idle.
-        let activity = ProcessInfo.processInfo.beginActivity(
-            options: .userInitiatedAllowingIdleSystemSleep,
-            reason: "Running the requested GPU search")
-        defer { ProcessInfo.processInfo.endActivity(activity) }
+        // Keep App Nap and idle system sleep from suspending an active search
+        // when the app is in the background. The display may still sleep.
+        let processInfo = ProcessInfo.processInfo
+        func beginSearchActivity() -> NSObjectProtocol {
+            processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled],
+                                      reason: "Running the requested GPU search")
+        }
+        var searchActivity: NSObjectProtocol? = beginSearchActivity()
+        defer {
+            if let searchActivity { processInfo.endActivity(searchActivity) }
+        }
 
         var metalEngine: MetalEngine?
         var chunkCoordinator: PuzzleChunkCoordinator?
@@ -548,7 +553,15 @@ public final class SearchController: ObservableObject {
 
         while !flags.stop {
             if let deadline = flags.deadline, Date() >= deadline { break }
-            if flags.pause { Thread.sleep(forTimeInterval: 0.15); continue }
+            if flags.pause {
+                if let activity = searchActivity {
+                    processInfo.endActivity(activity)
+                    searchActivity = nil
+                }
+                Thread.sleep(forTimeInterval: 0.15)
+                if !flags.pause, !flags.stop { searchActivity = beginSearchActivity() }
+                continue
+            }
 
             // Fanless MacBooks otherwise clock themselves into the floor.
             if flags.thermalGuard {
@@ -602,8 +615,7 @@ public final class SearchController: ObservableObject {
                     }
                     if e.isExhausted, !flags.stop {
                         if let nextChunk = try coordinator.nextRange() {
-                            try e.prepare(targets: ranges, threadCount: e.threadCount,
-                                          keyRange: nextChunk)
+                            try e.prepareNextRange(nextChunk)
                             SessionLog.write("Puzzle #\(coordinator.puzzleID): started another random chunk; \(progress)")
                             post { $0.note("Chunk complete. Selected another random uncompleted chunk. \(progress)", .info) }
                         } else {
